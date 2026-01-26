@@ -1,6 +1,6 @@
 """
-Environment verification script for Long/Short Z-Score Strategy.
-Tests package installations and Yahoo Finance connectivity.
+Environment verification script for Long/Short Z-Score Screening Strategy.
+Tests package installations, Yahoo Finance connectivity, and statistical libraries.
 """
 
 import sys
@@ -13,7 +13,8 @@ REQUIRED_PACKAGES = {
     'numpy': '1.26.4',
     'matplotlib': '3.9.3',
     'seaborn': '0.13.2',
-    'scipy': '1.14.1'
+    'scipy': '1.14.1',
+    'statsmodels': '0.14.4'
 }
 
 def check_python_version():
@@ -21,8 +22,11 @@ def check_python_version():
     version = sys.version_info
     print(f"Python Version: {version.major}.{version.minor}.{version.micro}")
     
-    if version.major == 3 and version.minor >= 9:
-        print("[OK] Python version is compatible (3.9+)\n")
+    if version.major == 3 and version.minor >= 9 and version.minor <= 10:
+        print("[OK] Python version is compatible (3.9 or 3.10 recommended)\n")
+        return True
+    elif version.major == 3 and version.minor >= 9:
+        print("[WARN] Python 3.11+ may have compatibility issues with statsmodels\n")
         return True
     else:
         print("[ERROR] Python 3.9+ required\n")
@@ -103,6 +107,51 @@ def test_yahoo_finance():
         print(f"[ERROR] Yahoo Finance test failed: {str(e)}")
         return False
 
+def test_statistical_libraries():
+    """Test statistical analysis capabilities (statsmodels)."""
+    print("\nTesting Statistical Libraries...")
+    print("-" * 50)
+    
+    try:
+        import pandas as pd
+        import numpy as np
+        from statsmodels.tsa.stattools import adfuller
+        from scipy import stats
+        
+        # Create synthetic mean-reverting series
+        np.random.seed(42)
+        n = 500
+        
+        # AR(1) process with mean reversion
+        ar_param = 0.7  # Autoregressive parameter
+        series = np.zeros(n)
+        for t in range(1, n):
+            series[t] = ar_param * series[t-1] + np.random.randn()
+        
+        # Test ADF (should detect stationarity)
+        adf_result = adfuller(series, maxlag=20)
+        
+        print(f"[OK] Statsmodels ADF test executed")
+        print(f"     ADF Statistic: {adf_result[0]:.4f}")
+        print(f"     P-value: {adf_result[1]:.4f}")
+        print(f"     Result: {'Stationary' if adf_result[1] < 0.05 else 'Non-stationary'}")
+        
+        # Test Jarque-Bera
+        jb_stat, jb_pvalue = stats.jarque_bera(series)
+        print(f"\n[OK] Scipy Jarque-Bera test executed")
+        print(f"     JB Statistic: {jb_stat:.4f}")
+        print(f"     P-value: {jb_pvalue:.4f}")
+        
+        return True
+        
+    except ImportError as e:
+        print(f"[ERROR] Cannot import statistical libraries: {str(e)}")
+        print("     Install with: pip install statsmodels scipy")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Statistical test failed: {str(e)}")
+        return False
+
 def test_data_processing():
     """Test basic data processing capabilities."""
     print("\nTesting Data Processing...")
@@ -127,6 +176,7 @@ def test_data_processing():
         print(f"[OK] Created sample dataset: {prices.shape}")
         print(f"[OK] Calculated rolling statistics")
         print(f"[OK] Z-scores computed successfully")
+        print(f"     Z-score range: [{z_scores.min().min():.2f}, {z_scores.max().max():.2f}]")
         
         return True
         
@@ -138,6 +188,7 @@ def main():
     """Run all verification tests."""
     print("=" * 50)
     print("ENVIRONMENT VERIFICATION")
+    print("Z-Score Screening Strategy")
     print("=" * 50)
     print()
     
@@ -145,6 +196,7 @@ def main():
         'Python Version': check_python_version(),
         'Package Installation': check_packages(),
         'Yahoo Finance API': test_yahoo_finance(),
+        'Statistical Libraries': test_statistical_libraries(),
         'Data Processing': test_data_processing()
     }
     
@@ -160,9 +212,16 @@ def main():
     
     if all_passed:
         print("\nAll tests passed. Ready to run the strategy.")
-        print("Execute: python longshort_zscore.py")
+        print("\nNext steps:")
+        print("  1. Review configuration in longshort_zscore.py")
+        print("  2. Execute: python longshort_zscore.py")
+        print("  3. Results will be saved to results/ directory")
     else:
         print("\nSome tests failed. Resolve issues before running strategy.")
+        print("\nCommon solutions:")
+        print("  - Package errors: pip install -r requirements.txt")
+        print("  - Network errors: Check internet connection")
+        print("  - Python version: Use Python 3.9 or 3.10")
     
     return all_passed
 
