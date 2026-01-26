@@ -1,14 +1,19 @@
 """
-Long/Short Z-Score Mean Reversion Strategy
+Long/Short Z-Score Screening Strategy
 European Large-Cap Equity Universe (2019-2024)
 
 Strategy Logic:
 - Calculate 252-day rolling Z-scores for each stock
-- Long positions: Z-score < -1.5 (undervalued)
-- Short positions: Z-score > 1.5 (overvalued)
-- Exit: Z-score returns to [-0.5, 0.5] (mean reversion)
+- RANK all stocks by Z-score at each rebalancing date
+- Long top N stocks with lowest Z-scores (most undervalued)
+- Short top N stocks with highest Z-scores (most overvalued)
 - Rebalancing: Monthly (first business day)
 - Transaction costs: 10 basis points per trade
+
+Statistical Validation:
+- Stationarity tests (Augmented Dickey-Fuller)
+- Normality tests (Jarque-Bera)
+- Correlation analysis
 """
 
 import os
@@ -22,19 +27,21 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+from statsmodels.tsa.stattools import adfuller
 
 # Configuration
 warnings.filterwarnings('ignore')
 sns.set_style("whitegrid")
 plt.rcParams['figure.dpi'] = 100
 
-class ZScoreStrategy:
+class ZScoreScreeningStrategy:
     """
-    Statistical arbitrage strategy using Z-score mean reversion signals.
-    Implements monthly rebalancing with robust data handling.
+    Statistical arbitrage strategy using Z-score ranking for security selection.
+    Implements proper screening methodology with ranking and top-N selection.
     """
     
-    def __init__(self, tickers, start_date, end_date, initial_capital=100000):
+    def __init__(self, tickers, start_date, end_date, initial_capital=100000, 
+                 n_long=10, n_short=10):
         """
         Initialize strategy parameters.
         
@@ -43,56 +50,56 @@ class ZScoreStrategy:
             start_date: Backtest start date (YYYY-MM-DD)
             end_date: Backtest end date (YYYY-MM-DD)
             initial_capital: Starting portfolio value in EUR
+            n_long: Number of long positions in portfolio
+            n_short: Number of short positions in portfolio
         """
         self.tickers = tickers
         self.start_date = start_date
         self.end_date = end_date
         self.initial_capital = initial_capital
+        self.n_long = n_long
+        self.n_short = n_short
         
         # Strategy Parameters
         self.lookback_window = 252      # Rolling window for Z-score (1 year)
-        self.entry_threshold = 1.5      # |Z-score| > 1.5 triggers entry
-        self.exit_threshold = 0.5       # |Z-score| < 0.5 triggers exit
         self.transaction_cost = 0.0010  # 10 basis points
         self.rebalance_freq = 'MS'      # Monthly start frequency
         
         # Data containers
         self.data = pd.DataFrame()
         self.z_scores = pd.DataFrame()
-        self.signals = pd.DataFrame()
         self.positions = pd.DataFrame()
         self.portfolio_value = pd.Series(dtype=float)
         self.daily_returns = pd.Series(dtype=float)
         self.trades = pd.DataFrame()
         self.metrics = {}
+        self.statistical_tests = {}
         
         # Create output directories
         os.makedirs('data', exist_ok=True)
         os.makedirs('results', exist_ok=True)
         
-        print(f"\n{'='*60}")
-        print(f"Z-SCORE LONG/SHORT STRATEGY INITIALIZATION")
-        print(f"{'='*60}")
-        print(f"Universe:       {len(tickers)} European stocks")
-        print(f"Period:         {start_date} to {end_date}")
-        print(f"Initial Capital: EUR {initial_capital:,.0f}")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*70}")
+        print(f"Z-SCORE SCREENING STRATEGY INITIALIZATION")
+        print(f"{'='*70}")
+        print(f"Universe:         {len(tickers)} European stocks")
+        print(f"Period:           {start_date} to {end_date}")
+        print(f"Initial Capital:  EUR {initial_capital:,.0f}")
+        print(f"Portfolio Size:   {n_long} Long + {n_short} Short = {n_long + n_short} positions")
+        print(f"Screening Method: Rank-based selection (top/bottom N by Z-score)")
+        print(f"{'='*70}\n")
     
     def download_data(self, max_retries=3, retry_delay=2):
         """
         Download historical adjusted close prices with robust error handling.
-        
-        Args:
-            max_retries: Maximum number of retry attempts per ticker
-            retry_delay: Seconds to wait between retries
         """
-        print("[STEP 1/6] Downloading Historical Data...")
-        print("-" * 60)
+        print("[STEP 1/7] Downloading Historical Data...")
+        print("-" * 70)
         
         valid_data = {}
         failed_tickers = []
         
-        # Calculate minimum required data points (70% of expected trading days)
+        # Calculate minimum required data points
         date_range = pd.date_range(self.start_date, self.end_date, freq='B')
         min_data_points = int(len(date_range) * 0.70)
         
@@ -101,7 +108,6 @@ class ZScoreStrategy:
             
             for attempt in range(1, max_retries + 1):
                 try:
-                    # Download with progress suppression
                     df = yf.download(
                         ticker,
                         start=self.start_date,
@@ -110,7 +116,6 @@ class ZScoreStrategy:
                         show_errors=False
                     )
                     
-                    # Validation checks
                     if df.empty:
                         print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - No data available")
                         break
@@ -119,7 +124,6 @@ class ZScoreStrategy:
                         print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - Insufficient data ({len(df)} points)")
                         break
                     
-                    # Success
                     valid_data[ticker] = df['Adj Close']
                     print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - OK ({len(df)} points)")
                     success = True
@@ -130,138 +134,361 @@ class ZScoreStrategy:
                         print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - Retry {attempt}/{max_retries}")
                         time.sleep(retry_delay)
                     else:
-                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - FAILED after {max_retries} attempts")
+                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - FAILED")
             
             if not success:
                 failed_tickers.append(ticker)
         
-        # Check minimum universe size
-        if len(valid_data) < 10:
+        # Validate minimum universe size
+        min_universe = max(self.n_long + self.n_short + 5, 15)
+        if len(valid_data) < min_universe:
             raise RuntimeError(
                 f"CRITICAL: Only {len(valid_data)} tickers retrieved. "
-                f"Minimum 10 required for diversification."
+                f"Minimum {min_universe} required for {self.n_long}L/{self.n_short}S portfolio."
             )
         
         # Construct price matrix
         self.data = pd.DataFrame(valid_data)
         
-        # Handle missing values
+        # Data cleaning
         missing_before = self.data.isna().sum().sum()
         self.data = self.data.interpolate(method='linear', limit=5, limit_direction='both')
         self.data.dropna(inplace=True)
-        missing_after = self.data.isna().sum().sum()
         
         print(f"\n  Data Cleaning:")
         print(f"    - Missing values filled: {missing_before}")
-        print(f"    - Remaining NaNs dropped: {missing_after}")
-        print(f"\n  Final Universe: {self.data.shape[1]} stocks, {self.data.shape[0]} trading days")
+        print(f"    - Final universe: {self.data.shape[1]} stocks, {self.data.shape[0]} trading days")
         
         if failed_tickers:
-            print(f"  Failed Tickers ({len(failed_tickers)}): {', '.join(failed_tickers[:5])}" + 
-                  ("..." if len(failed_tickers) > 5 else ""))
+            print(f"    - Failed tickers: {len(failed_tickers)}")
         
-        # Save cleaned data
         self.data.to_csv('data/cleaned_prices.csv')
         print(f"  Saved to data/cleaned_prices.csv\n")
     
     def calculate_indicators(self):
-        """Calculate rolling Z-scores for mean reversion signals."""
-        print("[STEP 2/6] Calculating Z-Score Indicators...")
-        print("-" * 60)
+        """Calculate rolling Z-scores for screening."""
+        print("[STEP 2/7] Calculating Z-Score Indicators...")
+        print("-" * 70)
         
         # Rolling statistics
-        rolling_mean = self.data.rolling(window=self.lookback_window, min_periods=self.lookback_window).mean()
-        rolling_std = self.data.rolling(window=self.lookback_window, min_periods=self.lookback_window).std()
+        rolling_mean = self.data.rolling(
+            window=self.lookback_window, 
+            min_periods=self.lookback_window
+        ).mean()
         
-        # Z-score calculation: (Price - Mean) / StdDev
+        rolling_std = self.data.rolling(
+            window=self.lookback_window, 
+            min_periods=self.lookback_window
+        ).std()
+        
+        # Z-score: (Price - Mean) / StdDev
         self.z_scores = (self.data - rolling_mean) / rolling_std
         
-        # Remove initial warm-up period
+        # Remove warm-up period
         self.z_scores = self.z_scores.dropna()
         self.data = self.data.loc[self.z_scores.index]
         
         # Summary statistics
-        print(f"  Z-Score Range: [{self.z_scores.min().min():.2f}, {self.z_scores.max().max():.2f}]")
-        print(f"  Mean: {self.z_scores.mean().mean():.3f}")
-        print(f"  Std Dev: {self.z_scores.std().mean():.3f}")
-        print(f"  Valid data points: {len(self.z_scores)}")
+        print(f"  Z-Score Statistics:")
+        print(f"    Range:      [{self.z_scores.min().min():.2f}, {self.z_scores.max().max():.2f}]")
+        print(f"    Mean:       {self.z_scores.mean().mean():.3f}")
+        print(f"    Std Dev:    {self.z_scores.std().mean():.3f}")
+        print(f"    Data points: {len(self.z_scores)}")
         print(f"  Indicators calculated\n")
+    
+    def run_statistical_tests(self):
+        """
+        Perform statistical validation of Z-scores.
+        Tests for stationarity, normality, and correlation structure.
+        """
+        print("[STEP 3/7] Running Statistical Tests...")
+        print("-" * 70)
+        
+        results = {
+            'stationarity': {},
+            'normality': {},
+            'correlation': {}
+        }
+        
+        # 1. Stationarity Test (Augmented Dickey-Fuller)
+        print("  [1/3] Testing Stationarity (ADF Test)...")
+        stationary_count = 0
+        
+        for ticker in self.z_scores.columns:
+            z_series = self.z_scores[ticker].dropna()
+            
+            try:
+                adf_result = adfuller(z_series, maxlag=20, regression='c')
+                
+                results['stationarity'][ticker] = {
+                    'adf_statistic': adf_result[0],
+                    'p_value': adf_result[1],
+                    'critical_values': adf_result[4],
+                    'is_stationary': adf_result[1] < 0.05
+                }
+                
+                if adf_result[1] < 0.05:
+                    stationary_count += 1
+                    
+            except Exception as e:
+                results['stationarity'][ticker] = {'error': str(e)}
+        
+        stationarity_pct = (stationary_count / len(self.z_scores.columns)) * 100
+        print(f"        Result: {stationary_count}/{len(self.z_scores.columns)} "
+              f"({stationarity_pct:.1f}%) series are stationary (p < 0.05)")
+        
+        # 2. Normality Test (Jarque-Bera)
+        print("  [2/3] Testing Normality (Jarque-Bera Test)...")
+        normal_count = 0
+        
+        for ticker in self.z_scores.columns:
+            z_series = self.z_scores[ticker].dropna()
+            
+            try:
+                jb_stat, p_value = stats.jarque_bera(z_series)
+                
+                results['normality'][ticker] = {
+                    'jb_statistic': jb_stat,
+                    'p_value': p_value,
+                    'skewness': stats.skew(z_series),
+                    'kurtosis': stats.kurtosis(z_series),
+                    'is_normal': p_value > 0.05
+                }
+                
+                if p_value > 0.05:
+                    normal_count += 1
+                    
+            except Exception as e:
+                results['normality'][ticker] = {'error': str(e)}
+        
+        normality_pct = (normal_count / len(self.z_scores.columns)) * 100
+        print(f"        Result: {normal_count}/{len(self.z_scores.columns)} "
+              f"({normality_pct:.1f}%) series are approximately normal (p > 0.05)")
+        
+        # Calculate aggregate skewness and kurtosis
+        all_skewness = [results['normality'][t]['skewness'] 
+                       for t in self.z_scores.columns 
+                       if 'skewness' in results['normality'][t]]
+        all_kurtosis = [results['normality'][t]['kurtosis'] 
+                       for t in self.z_scores.columns 
+                       if 'kurtosis' in results['normality'][t]]
+        
+        avg_skew = np.mean(all_skewness)
+        avg_kurt = np.mean(all_kurtosis)
+        
+        print(f"        Average Skewness: {avg_skew:.3f}")
+        print(f"        Average Kurtosis: {avg_kurt:.3f}")
+        
+        # 3. Correlation Analysis
+        print("  [3/3] Analyzing Correlation Structure...")
+        corr_matrix = self.z_scores.corr()
+        
+        # Remove diagonal (self-correlation = 1)
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        correlations = corr_matrix.where(mask).stack().values
+        
+        results['correlation'] = {
+            'matrix': corr_matrix,
+            'mean_correlation': np.mean(correlations),
+            'median_correlation': np.median(correlations),
+            'max_correlation': np.max(correlations),
+            'min_correlation': np.min(correlations),
+            'std_correlation': np.std(correlations)
+        }
+        
+        print(f"        Mean pairwise correlation: {results['correlation']['mean_correlation']:.3f}")
+        print(f"        Median correlation:        {results['correlation']['median_correlation']:.3f}")
+        print(f"        Max correlation:           {results['correlation']['max_correlation']:.3f}")
+        
+        self.statistical_tests = results
+        
+        # Save detailed results
+        self._save_statistical_tests()
+        
+        print(f"  Statistical tests complete\n")
+    
+    def _save_statistical_tests(self):
+        """Save statistical test results to file."""
+        with open('results/statistical_tests.txt', 'w') as f:
+            f.write("Z-SCORE SCREENING STRATEGY - STATISTICAL VALIDATION\n")
+            f.write("="*70 + "\n\n")
+            
+            # Stationarity Summary
+            f.write("1. STATIONARITY TESTS (Augmented Dickey-Fuller)\n")
+            f.write("-"*70 + "\n")
+            
+            stationary = [t for t, r in self.statistical_tests['stationarity'].items() 
+                         if r.get('is_stationary', False)]
+            f.write(f"Stationary series: {len(stationary)}/{len(self.statistical_tests['stationarity'])} "
+                   f"({len(stationary)/len(self.statistical_tests['stationarity'])*100:.1f}%)\n\n")
+            
+            f.write("Sample Results (first 5 tickers):\n")
+            for ticker in list(self.statistical_tests['stationarity'].keys())[:5]:
+                result = self.statistical_tests['stationarity'][ticker]
+                if 'p_value' in result:
+                    f.write(f"  {ticker:12} ADF={result['adf_statistic']:7.3f}  "
+                           f"p-value={result['p_value']:.4f}  "
+                           f"{'STATIONARY' if result['is_stationary'] else 'NON-STATIONARY'}\n")
+            
+            # Normality Summary
+            f.write("\n2. NORMALITY TESTS (Jarque-Bera)\n")
+            f.write("-"*70 + "\n")
+            
+            normal = [t for t, r in self.statistical_tests['normality'].items() 
+                     if r.get('is_normal', False)]
+            f.write(f"Normal distributions: {len(normal)}/{len(self.statistical_tests['normality'])} "
+                   f"({len(normal)/len(self.statistical_tests['normality'])*100:.1f}%)\n\n")
+            
+            # Correlation Summary
+            f.write("\n3. CORRELATION ANALYSIS\n")
+            f.write("-"*70 + "\n")
+            corr = self.statistical_tests['correlation']
+            f.write(f"Mean pairwise correlation:   {corr['mean_correlation']:7.3f}\n")
+            f.write(f"Median correlation:          {corr['median_correlation']:7.3f}\n")
+            f.write(f"Range:                       [{corr['min_correlation']:.3f}, {corr['max_correlation']:.3f}]\n")
+            f.write(f"Standard deviation:          {corr['std_correlation']:7.3f}\n")
+            
+            # Interpretation
+            f.write("\n4. INTERPRETATION\n")
+            f.write("-"*70 + "\n")
+            
+            stat_pct = len(stationary)/len(self.statistical_tests['stationarity'])*100
+            if stat_pct > 80:
+                f.write("Stationarity: EXCELLENT - Z-scores exhibit strong mean reversion\n")
+            elif stat_pct > 60:
+                f.write("Stationarity: GOOD - Majority of Z-scores are mean-reverting\n")
+            else:
+                f.write("Stationarity: POOR - Many series lack mean reversion properties\n")
+            
+            if abs(corr['mean_correlation']) < 0.3:
+                f.write("Correlation: LOW - Good diversification across signals\n")
+            elif abs(corr['mean_correlation']) < 0.5:
+                f.write("Correlation: MODERATE - Acceptable diversification\n")
+            else:
+                f.write("Correlation: HIGH - Limited diversification benefits\n")
     
     def generate_signals(self):
         """
-        Generate trading signals based on Z-score thresholds.
-        Monthly rebalancing with position flip capability.
+        Generate trading signals using RANKING-BASED SCREENING.
+        At each rebalancing date:
+        1. Rank all stocks by Z-score
+        2. Long top N stocks with lowest Z-scores (most undervalued)
+        3. Short top N stocks with highest Z-scores (most overvalued)
         """
-        print("[STEP 3/6] Generating Trading Signals...")
-        print("-" * 60)
+        print("[STEP 4/7] Generating Screening Signals (Rank-Based)...")
+        print("-" * 70)
         
-        # Generate daily signals
+        # Initialize signals
         signals = pd.DataFrame(0, index=self.z_scores.index, columns=self.z_scores.columns)
         
-        # Long signal: Z-score < -entry_threshold (undervalued)
-        signals[self.z_scores < -self.entry_threshold] = 1
+        # Get rebalancing dates (monthly)
+        rebalance_dates = self.z_scores.resample(self.rebalance_freq).first().index
         
-        # Short signal: Z-score > +entry_threshold (overvalued)
-        signals[self.z_scores > self.entry_threshold] = -1
+        long_selections = []
+        short_selections = []
         
-        # Exit signal: Z-score returns to neutral band
-        neutral_band = (self.z_scores > -self.exit_threshold) & (self.z_scores < self.exit_threshold)
-        signals[neutral_band] = 0
+        # Generate signals at each rebalancing date
+        for date in rebalance_dates:
+            if date not in self.z_scores.index:
+                continue
+            
+            # Get Z-scores for this date
+            z_row = self.z_scores.loc[date].dropna()
+            
+            if len(z_row) < self.n_long + self.n_short:
+                print(f"  Warning: Insufficient stocks at {date.date()} - skipping")
+                continue
+            
+            # SCREENING: Rank by Z-score
+            sorted_zscores = z_row.sort_values()
+            
+            # Select TOP N most undervalued (lowest/most negative Z-scores)
+            long_tickers = sorted_zscores.head(self.n_long).index.tolist()
+            signals.loc[date, long_tickers] = 1
+            long_selections.extend(long_tickers)
+            
+            # Select TOP N most overvalued (highest/most positive Z-scores)
+            short_tickers = sorted_zscores.tail(self.n_short).index.tolist()
+            signals.loc[date, short_tickers] = -1
+            short_selections.extend(short_tickers)
         
-        # Apply monthly rebalancing frequency
-        # Keep positions only on rebalance dates, forward fill between
-        rebalance_dates = signals.resample(self.rebalance_freq).first().index
+        # Forward fill positions between rebalances
         monthly_signals = signals.loc[rebalance_dates]
+        self.positions = monthly_signals.reindex(self.z_scores.index, method='ffill').fillna(0)
         
-        # Forward fill to maintain positions between rebalances
-        self.positions = monthly_signals.reindex(signals.index, method='ffill').fillna(0)
+        # Calculate selection statistics
+        from collections import Counter
+        long_counter = Counter(long_selections)
+        short_counter = Counter(short_selections)
         
-        # Calculate signal statistics
-        long_signals = (self.positions == 1).sum().sum()
-        short_signals = (self.positions == -1).sum().sum()
-        flat_signals = (self.positions == 0).sum().sum()
-        total_signals = long_signals + short_signals + flat_signals
+        print(f"  Screening Configuration:")
+        print(f"    Rebalancing dates: {len(rebalance_dates)}")
+        print(f"    Long positions:    {self.n_long} stocks per rebalance")
+        print(f"    Short positions:   {self.n_short} stocks per rebalance")
         
-        print(f"  Rebalance Frequency: Monthly ({len(rebalance_dates)} rebalances)")
-        print(f"  Signal Distribution:")
-        print(f"    Long:  {long_signals:6d} ({long_signals/total_signals*100:5.1f}%)")
-        print(f"    Short: {short_signals:6d} ({short_signals/total_signals*100:5.1f}%)")
-        print(f"    Flat:  {flat_signals:6d} ({flat_signals/total_signals*100:5.1f}%)")
+        print(f"\n  Selection Statistics:")
+        print(f"    Total long selections:  {len(long_selections)}")
+        print(f"    Total short selections: {len(short_selections)}")
+        print(f"    Unique stocks traded:   {len(set(long_selections + short_selections))}")
         
-        # Save positions matrix
+        # Most frequently selected stocks
+        print(f"\n  Most Frequently Selected (Long):")
+        for ticker, count in long_counter.most_common(5):
+            pct = (count / len(rebalance_dates)) * 100
+            print(f"    {ticker:12} {count:3d} times ({pct:5.1f}%)")
+        
+        print(f"\n  Most Frequently Selected (Short):")
+        for ticker, count in short_counter.most_common(5):
+            pct = (count / len(rebalance_dates)) * 100
+            print(f"    {ticker:12} {count:3d} times ({pct:5.1f}%)")
+        
+        # Save positions
         self.positions.to_csv('results/positions.csv')
-        print(f"  Saved to results/positions.csv\n")
+        print(f"\n  Saved to results/positions.csv\n")
     
     def run_backtest(self):
-        """
-        Execute backtest with transaction costs and equal-weight allocation.
-        """
-        print("[STEP 4/6] Running Backtest Engine...")
-        print("-" * 60)
+        """Execute backtest with equal-weight allocation."""
+        print("[STEP 5/7] Running Backtest Engine...")
+        print("-" * 70)
         
-        # Calculate daily returns
+        # Daily returns
         returns = self.data.pct_change().fillna(0)
         
-        # Lag positions by 1 day (trade on T+1 after signal on T)
+        # Lag positions (trade on T+1)
         lagged_positions = self.positions.shift(1).fillna(0)
         
         # Position changes for transaction costs
         position_changes = lagged_positions.diff().abs().fillna(0)
         
-        # Count active positions per day for equal weighting
-        active_positions = lagged_positions.abs().sum(axis=1)
-        active_positions = active_positions.replace(0, 1)  # Avoid division by zero
+        # Equal-weight allocation
+        # Long side: 50% capital / n_long positions
+        # Short side: 50% capital / n_short positions
+        weights = pd.DataFrame(0.0, index=lagged_positions.index, columns=lagged_positions.columns)
         
-        # Daily strategy returns (equal-weighted across active positions)
-        strategy_returns_gross = (lagged_positions * returns).sum(axis=1) / active_positions
+        for date in weights.index:
+            long_mask = lagged_positions.loc[date] == 1
+            short_mask = lagged_positions.loc[date] == -1
+            
+            n_long_active = long_mask.sum()
+            n_short_active = short_mask.sum()
+            
+            if n_long_active > 0:
+                weights.loc[date, long_mask] = 0.5 / n_long_active
+            
+            if n_short_active > 0:
+                weights.loc[date, short_mask] = -0.5 / n_short_active
         
-        # Transaction costs (10 bps per trade)
-        daily_costs = (position_changes.sum(axis=1) / active_positions) * self.transaction_cost
+        # Strategy returns
+        strategy_returns_gross = (weights * returns).sum(axis=1)
         
-        # Net daily returns
+        # Transaction costs
+        turnover = position_changes.sum(axis=1)
+        daily_costs = turnover * self.transaction_cost
+        
+        # Net returns
         self.daily_returns = strategy_returns_gross - daily_costs
         
-        # Cumulative portfolio value
+        # Portfolio value
         self.portfolio_value = self.initial_capital * (1 + self.daily_returns).cumprod()
         
         # Generate trade log
@@ -270,17 +497,18 @@ class ZScoreStrategy:
         # Summary
         total_trades = position_changes.sum().sum()
         total_costs = daily_costs.sum() * self.initial_capital
+        avg_turnover = turnover.mean()
         
-        print(f"  Total Trades: {int(total_trades)}")
-        print(f"  Transaction Costs: EUR {total_costs:,.0f}")
-        print(f"  Average Active Positions: {active_positions.mean():.1f}")
+        print(f"  Backtest Results:")
+        print(f"    Total trades:       {int(total_trades)}")
+        print(f"    Transaction costs:  EUR {total_costs:,.0f}")
+        print(f"    Average turnover:   {avg_turnover:.2f} positions/day")
         print(f"  Backtest complete\n")
         
-        # Save equity curve
         self.portfolio_value.to_csv('results/equity_curve.csv')
     
     def _generate_trade_log(self, position_changes):
-        """Generate detailed trade log for audit trail."""
+        """Generate detailed trade log."""
         trades = []
         
         for date in position_changes.index:
@@ -304,8 +532,8 @@ class ZScoreStrategy:
     
     def calculate_metrics(self):
         """Calculate comprehensive performance metrics."""
-        print("[STEP 5/6] Computing Performance Metrics...")
-        print("-" * 60)
+        print("[STEP 6/7] Computing Performance Metrics...")
+        print("-" * 70)
         
         # Time metrics
         days = (self.portfolio_value.index[-1] - self.portfolio_value.index[0]).days
@@ -320,20 +548,19 @@ class ZScoreStrategy:
         downside_returns = self.daily_returns[self.daily_returns < 0]
         downside_deviation = downside_returns.std() * np.sqrt(252)
         
-        # Sharpe and Sortino Ratios (risk-free rate = 0%)
+        # Ratios
         sharpe_ratio = cagr / volatility if volatility > 0 else 0
         sortino_ratio = cagr / downside_deviation if downside_deviation > 0 else 0
         
-        # Drawdown analysis
+        # Drawdown
         cumulative = (1 + self.daily_returns).cumprod()
         running_max = cumulative.cummax()
         drawdown = (cumulative - running_max) / running_max
         max_drawdown = drawdown.min()
         
-        # Calmar Ratio
         calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0
         
-        # Win rate and profit metrics
+        # Win metrics
         winning_days = (self.daily_returns > 0).sum()
         losing_days = (self.daily_returns < 0).sum()
         win_rate = winning_days / len(self.daily_returns) if len(self.daily_returns) > 0 else 0
@@ -342,7 +569,6 @@ class ZScoreStrategy:
         avg_loss = self.daily_returns[self.daily_returns < 0].mean()
         profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else np.inf
         
-        # Store metrics
         self.metrics = {
             'Total Return': total_return,
             'CAGR': cagr,
@@ -358,43 +584,50 @@ class ZScoreStrategy:
             'Avg Daily Return': self.daily_returns.mean()
         }
         
-        # Display metrics
-        print(f"\n  {'='*56}")
-        print(f"  {'PERFORMANCE SUMMARY':^56}")
-        print(f"  {'='*56}")
+        # Display
+        print(f"\n  {'='*66}")
+        print(f"  {'PERFORMANCE SUMMARY':^66}")
+        print(f"  {'='*66}")
         print(f"  Total Return:        {total_return:>10.2%}")
         print(f"  CAGR:                {cagr:>10.2%}")
         print(f"  Volatility:          {volatility:>10.2%}")
-        print(f"  {'='*56}")
+        print(f"  {'='*66}")
         print(f"  Sharpe Ratio:        {sharpe_ratio:>10.2f}")
         print(f"  Sortino Ratio:       {sortino_ratio:>10.2f}")
         print(f"  Calmar Ratio:        {calmar_ratio:>10.2f}")
-        print(f"  {'='*56}")
+        print(f"  {'='*66}")
         print(f"  Max Drawdown:        {max_drawdown:>10.2%}")
         print(f"  Win Rate:            {win_rate:>10.2%}")
         print(f"  Profit Factor:       {profit_factor:>10.2f}")
-        print(f"  {'='*56}\n")
+        print(f"  {'='*66}\n")
         
-        # Save metrics
+        # Save
         with open('results/metrics.txt', 'w') as f:
-            f.write("LONG/SHORT Z-SCORE STRATEGY - PERFORMANCE METRICS\n")
-            f.write("="*60 + "\n\n")
+            f.write("Z-SCORE SCREENING STRATEGY - PERFORMANCE METRICS\n")
+            f.write("="*70 + "\n\n")
+            
+            f.write("PORTFOLIO CONFIGURATION\n")
+            f.write(f"Long positions:  {self.n_long}\n")
+            f.write(f"Short positions: {self.n_short}\n")
+            f.write(f"Total positions: {self.n_long + self.n_short}\n\n")
+            
+            f.write("PERFORMANCE METRICS\n")
             for key, value in self.metrics.items():
                 if isinstance(value, float):
-                    if abs(value) < 0.1:  # Percentage metrics
+                    if abs(value) < 0.1:
                         f.write(f"{key:.<40} {value:>12.2%}\n")
-                    else:  # Ratio metrics
+                    else:
                         f.write(f"{key:.<40} {value:>12.4f}\n")
         
         print(f"  Saved to results/metrics.txt\n")
     
     def generate_visualizations(self):
         """Create comprehensive performance dashboard."""
-        print("[STEP 6/6] Generating Visualizations...")
-        print("-" * 60)
+        print("[STEP 7/7] Generating Visualizations...")
+        print("-" * 70)
         
-        fig = plt.figure(figsize=(18, 12))
-        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        fig = plt.figure(figsize=(20, 14))
+        gs = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.3)
         
         # 1. Equity Curve
         ax1 = fig.add_subplot(gs[0, :2])
@@ -444,21 +677,18 @@ class ZScoreStrategy:
             ax3.set_xlabel('Month', fontsize=11)
             ax3.set_ylabel('Year', fontsize=11)
         
-        # 4. Z-Score Distribution (Current)
+        # 4. Z-Score Distribution
         ax4 = fig.add_subplot(gs[0, 2])
         current_zscores = self.z_scores.iloc[-1].dropna()
         ax4.hist(current_zscores, bins=30, color='navy', alpha=0.6, edgecolor='black')
-        ax4.axvline(-self.entry_threshold, color='green', linestyle='--', linewidth=2, label='Long Threshold')
-        ax4.axvline(self.entry_threshold, color='red', linestyle='--', linewidth=2, label='Short Threshold')
-        ax4.axvline(-self.exit_threshold, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
-        ax4.axvline(self.exit_threshold, color='orange', linestyle=':', linewidth=1.5, alpha=0.7, label='Exit Band')
+        ax4.axvline(0, color='orange', linestyle='-', linewidth=2, label='Mean')
         ax4.set_title('Current Z-Score Distribution', fontsize=12, fontweight='bold')
         ax4.set_xlabel('Z-Score', fontsize=10)
         ax4.set_ylabel('Frequency', fontsize=10)
         ax4.legend(fontsize=8)
         ax4.grid(True, alpha=0.3)
         
-        # 5. Rolling Sharpe Ratio
+        # 5. Rolling Sharpe
         ax5 = fig.add_subplot(gs[1, 2])
         rolling_sharpe = (
             self.daily_returns.rolling(window=252).mean() / 
@@ -470,7 +700,7 @@ class ZScoreStrategy:
         ax5.set_ylabel('Sharpe Ratio', fontsize=10)
         ax5.grid(True, alpha=0.3)
         
-        # 6. Performance Metrics Table
+        # 6. Metrics Table
         ax6 = fig.add_subplot(gs[2, 2])
         ax6.axis('off')
         
@@ -495,12 +725,67 @@ class ZScoreStrategy:
         table.set_fontsize(10)
         table.scale(1, 2)
         
-        # Style header row
         for i in range(2):
             table[(0, i)].set_facecolor('#4472C4')
             table[(0, i)].set_text_props(weight='bold', color='white')
         
-        # Save figure
+        # 7. Correlation Heatmap
+        ax7 = fig.add_subplot(gs[3, :2])
+        
+        # Sample 20 stocks for readability
+        sample_tickers = self.z_scores.columns[:20]
+        corr_sample = self.statistical_tests['correlation']['matrix'].loc[sample_tickers, sample_tickers]
+        
+        sns.heatmap(
+            corr_sample,
+            cmap='coolwarm',
+            center=0,
+            ax=ax7,
+            cbar_kws={'label': 'Correlation'},
+            square=True,
+            linewidths=0.5,
+            vmin=-1,
+            vmax=1
+        )
+        ax7.set_title('Z-Score Correlation Matrix (Sample)', fontsize=12, fontweight='bold')
+        ax7.tick_params(labelsize=8)
+        
+        # 8. Statistical Tests Summary
+        ax8 = fig.add_subplot(gs[3, 2])
+        ax8.axis('off')
+        
+        stat_results = self.statistical_tests
+        stationary_count = sum(1 for r in stat_results['stationarity'].values() 
+                              if r.get('is_stationary', False))
+        normal_count = sum(1 for r in stat_results['normality'].values() 
+                          if r.get('is_normal', False))
+        
+        stat_text = [
+            ['Statistical Tests', ''],
+            ['', ''],
+            ['Stationarity (ADF)', f"{stationary_count}/{len(stat_results['stationarity'])}"],
+            ['Mean Reverting', f"{stationary_count/len(stat_results['stationarity'])*100:.0f}%"],
+            ['', ''],
+            ['Normality (JB)', f"{normal_count}/{len(stat_results['normality'])}"],
+            ['Normal Dist.', f"{normal_count/len(stat_results['normality'])*100:.0f}%"],
+            ['', ''],
+            ['Avg Correlation', f"{stat_results['correlation']['mean_correlation']:.3f}"]
+        ]
+        
+        stat_table = ax8.table(
+            cellText=stat_text,
+            loc='center',
+            cellLoc='left',
+            colWidths=[0.7, 0.3]
+        )
+        stat_table.auto_set_font_size(False)
+        stat_table.set_fontsize(9)
+        stat_table.scale(1, 1.8)
+        
+        stat_table[(0, 0)].set_facecolor('#4472C4')
+        stat_table[(0, 0)].set_text_props(weight='bold', color='white')
+        stat_table[(0, 1)].set_facecolor('#4472C4')
+        
         plt.savefig('results/dashboard.png', dpi=150, bbox_inches='tight')
         print(f"  Dashboard saved to results/dashboard.png\n")
         
@@ -513,6 +798,7 @@ class ZScoreStrategy:
         try:
             self.download_data()
             self.calculate_indicators()
+            self.run_statistical_tests()
             self.generate_signals()
             self.run_backtest()
             self.calculate_metrics()
@@ -520,72 +806,93 @@ class ZScoreStrategy:
             
             elapsed = (datetime.now() - start_time).total_seconds()
             
-            print(f"{'='*60}")
+            print(f"{'='*70}")
             print(f"EXECUTION COMPLETE")
-            print(f"{'='*60}")
+            print(f"{'='*70}")
             print(f"Total Runtime: {elapsed:.1f} seconds")
             print(f"Results saved to: results/")
-            print(f"{'='*60}\n")
+            print(f"{'='*70}\n")
             
         except Exception as e:
-            print(f"\n{'='*60}")
+            print(f"\n{'='*70}")
             print(f"CRITICAL ERROR")
-            print(f"{'='*60}")
+            print(f"{'='*70}")
             print(f"Execution failed: {str(e)}")
-            print(f"{'='*60}\n")
+            print(f"{'='*70}\n")
             raise
 
 def main():
     """Main execution function."""
-    
-    # European Large-Cap Universe (Validated Tickers)
-    EUROPEAN_TICKERS = [
-        # France (CAC 40)
-        "AIR.PA",   # Airbus
-        "MC.PA",    # LVMH
-        "OR.PA",    # L'Oréal
-        "SAN.PA",   # Sanofi
-        "TTE.PA",   # TotalEnergies
-        "BNP.PA",   # BNP Paribas
-        "SU.PA",    # Schneider Electric
-        "KER.PA",   # Kering
-        "AI.PA",    # Air Liquide
-        "RMS.PA",   # Hermès
-        "CS.PA",    # AXA
-        "DG.PA",    # Vinci
-        "VIE.PA",   # Veolia
-        "BN.PA",    # Danone
-        
-        # Germany (DAX)
-        "SAP.DE",   # SAP
-        "SIE.DE",   # Siemens
-        "ALV.DE",   # Allianz
-        "DTE.DE",   # Deutsche Telekom
-        "BMW.DE",   # BMW
-        "VOW3.DE",  # Volkswagen
-        "BAS.DE",   # BASF
-        "ADS.DE",   # Adidas
-        "MBG.DE",   # Mercedes-Benz
-        "DB1.DE",   # Deutsche Börse
-        
-        # Netherlands
-        "ASML.AS",  # ASML
-        "INGA.AS",  # ING
-        "ADYEN.AS", # Adyen
-        "UNA.AS",   # Unilever
-        "PHIA.AS",  # Philips
-        
-        # Spain (IBEX 35)
-        "SAN.MC",   # Banco Santander
-        "ITX.MC",   # Inditex
-        "BBVA.MC",  # BBVA
-        "IBE.MC",   # Iberdrola
-        
-        # Italy (FTSE MIB)
-        "ISP.MI",   # Intesa Sanpaolo
-        "ENEL.MI",  # Enel
-        "ENI.MI",   # Eni
-        "UCG.MI",   # UniCredit
+            # Universe: European large-cap stocks (CAC 40 + DAX 30)
+        self.tickers = [
+            # CAC 40 - France (Paris Exchange)
+            'AI.PA',      # Air Liquide
+            'AIR.PA',     # Airbus
+            'ALO.PA',     # Alstom
+            'MT.AS',      # ArcelorMittal
+            'CS.PA',      # AXA
+            'BNP.PA',     # BNP Paribas
+            'EN.PA',      # Bouygues
+            'CAP.PA',     # Capgemini
+            'CA.PA',      # Carrefour
+            'ACA.PA',     # Credit Agricole
+            'BN.PA',      # Danone
+            'ENGI.PA',    # ENGIE
+            'EL.PA',      # EssilorLuxottica
+            'RMS.PA',     # Hermes
+            'KER.PA',     # Kering
+            'OR.PA',      # L'Oreal
+            'LR.PA',      # Legrand
+            'MC.PA',      # LVMH
+            'ML.PA',      # Michelin
+            'ORA.PA',     # Orange
+            'RI.PA',      # Pernod Ricard
+            'PUB.PA',     # Publicis
+            'RNO.PA',     # Renault
+            'SAF.PA',     # Safran
+            'SGO.PA',     # Saint-Gobain
+            'SAN.PA',     # Sanofi
+            'SU.PA',      # Schneider Electric
+            'GLE.PA',     # Societe Generale
+            'STLAP.PA',   # Stellantis
+            'STMPA.PA',   # STMicroelectronics
+            'TEP.PA',     # Teleperformance
+            'HO.PA',      # Thales
+            'TTE.PA',      # TotalEnergies
+            'URW.PA',     # Unibail-Rodamco-Westfield
+            'VIE.PA',     # Veolia
+            'DG.PA',      # Vinci
+            'VIV.PA',     # Vivendi
+            
+            # DAX 30 - Germany (Frankfurt Exchange)
+            'ADS.DE',     # Adidas
+            'ALV.DE',     # Allianz
+            'BAS.DE',     # BASF
+            'BAYN.DE',    # Bayer
+            'BMW.DE',     # BMW
+            'CON.DE',     # Continental
+            'DAI.DE',     # Daimler (Mercedes-Benz)
+            '1COV.VI',    # Covestro
+            'DB1.DE',     # Deutsche Boerse
+            'DBK.DE',     # Deutsche Bank
+            'DHL.DE',     # Deutsche Post
+            'DTE.DE',     # Deutsche Telekom
+            'EOAN.DE',    # E.ON
+            'FRE.DE',     # Fresenius
+            'HEI.DE',     # HeidelbergCement
+            'HEN3.DE',    # Henkel
+            'IFX.DE',     # Infineon
+            'LIN.DE',     # Linde
+            'MRK.DE',     # Merck KGaA
+            'MTX.DE',     # MTU Aero Engines
+            'MUV2.DE',    # Munich Re
+            'RWE.DE',     # RWE
+            'SAP.DE',     # SAP
+            'SIE.DE',     # Siemens
+            'VOW3.DE',    # Volkswagen
+            'VNA.DE',     # Vonovia
+        ]
+
     ]
     
     # Strategy Configuration
@@ -593,11 +900,13 @@ def main():
         'tickers': EUROPEAN_TICKERS,
         'start_date': '2019-01-01',
         'end_date': '2024-01-01',
-        'initial_capital': 100000  # EUR
+        'initial_capital': 100000,
+        'n_long': 10,    # Top 10 undervalued stocks
+        'n_short': 10    # Top 10 overvalued stocks
     }
     
     # Execute Strategy
-    strategy = ZScoreStrategy(**CONFIG)
+    strategy = ZScoreScreeningStrategy(**CONFIG)
     strategy.run()
 
 if __name__ == "__main__":
