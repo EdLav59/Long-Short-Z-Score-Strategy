@@ -31,23 +31,6 @@ A quantitative statistical arbitrage strategy applied to European large-cap equi
 - Complete audit trail with detailed trade logs
 - Academic rigor suitable for MFE portfolios
 
-## Project Structurelongshort-zscore-strategy/
-├── README.md                       # This file
-├── requirements.txt                # Python dependencies
-├── .gitignore                      # Git exclusions
-├── longshort_zscore.py             # Main strategy implementation
-├── test_installation.py            # Environment verification script
-├── data/
-│   └── cleaned_prices.csv          # Historical price data (generated)
-├── results/
-│   ├── equity_curve.csv            # Daily portfolio values
-│   ├── positions.csv               # Position matrix (1/-1/0)
-│   ├── trade_log.csv               # Complete trade history
-│   ├── metrics.txt                 # Performance summary
-│   ├── statistical_tests.txt       # Statistical validation results
-│   └── dashboard.png               # Visualization dashboard
-└── notebooks/
-
 **For Educational and Research Purposes Only**
 
 This project is designed for academic demonstration, portfolio presentation, and quantitative research. It is not intended as investment advice or for live trading without significant additional development.
