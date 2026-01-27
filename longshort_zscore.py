@@ -826,27 +826,72 @@ class ZScoreScreeningStrategy:
 def main():
     """Main execution function."""
     
-    # European Large-Cap Universe (avec les bons tickers)
-    EUROPEAN_TICKERS = [
-        # CAC 40 - France
-        'AI.PA', 'AIR.PA', 'ALO.PA', 'MT.AS', 'CS.PA', 'BNP.PA',
-        'EN.PA', 'CAP.PA', 'CA.PA', 'ACA.PA', 'BN.PA', 'ENGI.PA',
-        'EL.PA', 'RMS.PA', 'KER.PA', 'OR.PA', 'LR.PA', 'MC.PA',
-        'ML.PA', 'ORA.PA', 'RI.PA', 'PUB.PA', 'RNO.PA', 'SAF.PA',
-        'SGO.PA', 'SAN.PA', 'SU.PA', 'GLE.PA', 'STLAP.PA', 'STMPA.PA',
-        'TEP.PA', 'HO.PA', 'TTE.PA', 'URW.PA', 'VIE.PA', 'DG.PA', 'VIV.PA',
+    # Top 50 S&P 500 stocks by market cap
+    SP500_TOP50 = [
+        # Tech Giants
+        'NVDA',   # Nvidia
+        'AAPL',   # Apple
+        'MSFT',   # Microsoft
+        'AMZN',   # Amazon
+        'GOOGL',  # Alphabet Class A
+        'GOOG',   # Alphabet Class C
+        'META',   # Meta Platforms
+        'AVGO',   # Broadcom
+        'TSLA',   # Tesla
+        'ORCL',   # Oracle
+        'AMD',    # Advanced Micro Devices
+        'PLTR',   # Palantir
+        'NFLX',   # Netflix
+        'CSCO',   # Cisco
+        'IBM',    # IBM
+        'CRM',    # Salesforce
+        'INTC',   # Intel
+        'MU',     # Micron Technology
+        'LRCX',   # Lam Research
+        'AMAT',   # Applied Materials
+        'KLAC',   # KLA Corporation
         
-        # DAX 30 - Germany
-        'ADS.DE', 'ALV.DE', 'BAS.DE', 'BAYN.DE', 'BMW.DE', 'CON.DE',
-        'MBG.DE', 'DB1.DE', 'DBK.DE', 'DHL.DE', 'DTE.DE',
-        'EOAN.DE', 'FRE.DE', 'HEI.DE', 'HEN3.DE', 'IFX.DE', 'LIN.DE',
-        'MRK.DE', 'MTX.DE', 'MUV2.DE', 'RWE.DE', 'SAP.DE', 'SIE.DE',
-        'VOW3.DE', 'VNA.DE'
+        # Financials
+        'BRK.B',  # Berkshire Hathaway
+        'JPM',    # JPMorgan Chase
+        'V',      # Visa
+        'MA',     # Mastercard
+        'BAC',    # Bank of America
+        'MS',     # Morgan Stanley
+        'GS',     # Goldman Sachs
+        'WFC',    # Wells Fargo
+        'AXP',    # American Express
+        
+        # Healthcare
+        'LLY',    # Eli Lilly
+        'JNJ',    # Johnson & Johnson
+        'ABBV',   # AbbVie
+        'UNH',    # UnitedHealth Group
+        'MRK',    # Merck
+        'TMO',    # Thermo Fisher Scientific
+        
+        # Consumer
+        'WMT',    # Walmart
+        'COST',   # Costco
+        'HD',     # Home Depot
+        'PG',     # Procter & Gamble
+        'KO',     # Coca-Cola
+        'MCD',    # McDonald's
+        'PM',     # Philip Morris
+        
+        # Energy & Industrials
+        'XOM',    # ExxonMobil
+        'CVX',    # Chevron
+        'GE',     # GE Aerospace
+        'CAT',    # Caterpillar
+        'RTX',    # RTX Corporation
+        'LIN',    # Linde
+        'TMUS',   # T-Mobile
     ]
     
     # Strategy Configuration
     CONFIG = {
-        'tickers': EUROPEAN_TICKERS,
+        'tickers': SP500_TOP50,
         'start_date': '2019-01-01',
         'end_date': '2024-01-01',
         'initial_capital': 100000,
