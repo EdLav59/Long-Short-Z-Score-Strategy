@@ -1,6 +1,6 @@
 """
 Long/Short Z-Score Screening Strategy
-European Large-Cap Equity Universe (2019-2024)
+S&P 500 Top 50 Universe (2019-2024)
 
 Strategy Logic:
 - Calculate 252-day rolling Z-scores for each stock
@@ -20,6 +20,7 @@ import os
 import time
 import warnings
 from datetime import datetime
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -49,7 +50,7 @@ class ZScoreScreeningStrategy:
             tickers: List of ticker symbols (Yahoo Finance format)
             start_date: Backtest start date (YYYY-MM-DD)
             end_date: Backtest end date (YYYY-MM-DD)
-            initial_capital: Starting portfolio value in EUR
+            initial_capital: Starting portfolio value in USD
             n_long: Number of long positions in portfolio
             n_short: Number of short positions in portfolio
         """
@@ -82,89 +83,59 @@ class ZScoreScreeningStrategy:
         print(f"\n{'='*70}")
         print(f"Z-SCORE SCREENING STRATEGY INITIALIZATION")
         print(f"{'='*70}")
-        print(f"Universe:         {len(tickers)} European stocks")
+        print(f"Universe:         {len(tickers)} S&P 500 stocks")
         print(f"Period:           {start_date} to {end_date}")
-        print(f"Initial Capital:  EUR {initial_capital:,.0f}")
+        print(f"Initial Capital:  USD ${initial_capital:,.0f}")
         print(f"Portfolio Size:   {n_long} Long + {n_short} Short = {n_long + n_short} positions")
         print(f"Screening Method: Rank-based selection (top/bottom N by Z-score)")
         print(f"{'='*70}\n")
     
-    def download_data(self, max_retries=3, retry_delay=2):
+    def download_data(self):
         """
-        Download historical adjusted close prices with robust error handling.
-        Uses Ticker.history() method for better reliability.
+        Download historical price data using the EXACT method from working momentum strategy.
         """
         print("[STEP 1/7] Downloading Historical Data...")
         print("-" * 70)
-        print("  This may take 5-10 minutes, please wait...")
+        print("  Downloading stocks individually (this may take 10-15 minutes)...")
         
-        valid_data = {}
-        failed_tickers = []
+        # CRITICAL: Convert dates to datetime objects (like momentum code)
+        start_dt = pd.to_datetime(self.start_date)
+        end_dt = pd.to_datetime(self.end_date)
         
-        # Calculate minimum required data points
-        date_range = pd.date_range(self.start_date, self.end_date, freq='B')
-        min_data_points = int(len(date_range) * 0.70)
+        all_data = {}
+        success_count = 0
         
         for i, ticker in enumerate(self.tickers, 1):
-            success = False
-            
-            for attempt in range(1, max_retries + 1):
-                try:
-                    # Use Ticker.history() method instead of yf.download()
-                    stock = yf.Ticker(ticker)
-                    df = stock.history(start=self.start_date, end=self.end_date, auto_adjust=True)
-                    
-                    if df.empty:
-                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - No data available")
-                        break
-                    
-                    if len(df) < min_data_points:
-                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - Insufficient data ({len(df)} points)")
-                        break
-                    
-                    # Use 'Close' instead of 'Adj Close' because auto_adjust=True
-                    valid_data[ticker] = df['Close']
-                    print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - OK ({len(df)} points)")
-                    success = True
-                    break
-                    
-                except Exception as e:
-                    if attempt < max_retries:
-                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - Retry {attempt}/{max_retries}")
-                        time.sleep(retry_delay)
-                    else:
-                        print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - FAILED")
-            
-            if not success:
-                failed_tickers.append(ticker)
-            
-            # Pause every 10 tickers to avoid rate limiting
-            if i % 10 == 0:
-                print(f"  Progress: {i}/{len(self.tickers)} tickers processed")
-                time.sleep(1)
+            try:
+                # Use EXACT same method as momentum strategy
+                stock = yf.Ticker(ticker)
+                hist = stock.history(start=start_dt, end=end_dt, auto_adjust=True)
+                
+                if not hist.empty and len(hist) > 100:  # At least 100 days of data
+                    all_data[ticker] = hist['Close']
+                    success_count += 1
+                    if success_count % 10 == 0:
+                        print(f"  Progress: {success_count}/{len(self.tickers)} stocks downloaded")
+            except Exception as e:
+                continue
         
-        # Validate minimum universe size
-        min_universe = max(self.n_long + self.n_short + 5, 15)
-        if len(valid_data) < min_universe:
-            raise RuntimeError(
-                f"CRITICAL: Only {len(valid_data)} tickers retrieved. "
-                f"Minimum {min_universe} required for {self.n_long}L/{self.n_short}S portfolio."
-            )
+        if len(all_data) == 0:
+            raise RuntimeError("No price data available")
         
-        # Construct price matrix
-        self.data = pd.DataFrame(valid_data)
+        self.data = pd.DataFrame(all_data)
         
-        # Data cleaning
-        missing_before = self.data.isna().sum().sum()
-        self.data = self.data.interpolate(method='linear', limit=5, limit_direction='both')
-        self.data.dropna(inplace=True)
+        # Clean data: remove stocks with insufficient history
+        initial_stocks = self.data.shape[1]
+        self.data = self.data.dropna(thresh=len(self.data)*0.7, axis=1)
+        removed = initial_stocks - self.data.shape[1]
         
-        print(f"\n  Data Cleaning:")
-        print(f"    - Missing values filled: {missing_before}")
-        print(f"    - Final universe: {self.data.shape[1]} stocks, {self.data.shape[0]} trading days")
+        if removed > 0:
+            print(f"  Removed {removed} stocks due to insufficient data")
         
-        if failed_tickers:
-            print(f"    - Failed tickers: {len(failed_tickers)}")
+        if self.data.empty or self.data.shape[1] == 0:
+            raise RuntimeError("No price data available")
+        
+        print(f"  Final dataset: {self.data.shape[1]} stocks, {len(self.data)} days")
         
         self.data.to_csv('data/cleaned_prices.csv')
         print(f"  Saved to data/cleaned_prices.csv\n")
@@ -421,7 +392,6 @@ class ZScoreScreeningStrategy:
         self.positions = monthly_signals.reindex(self.z_scores.index, method='ffill').fillna(0)
         
         # Calculate selection statistics
-        from collections import Counter
         long_counter = Counter(long_selections)
         short_counter = Counter(short_selections)
         
@@ -503,7 +473,7 @@ class ZScoreScreeningStrategy:
         
         print(f"  Backtest Results:")
         print(f"    Total trades:       {int(total_trades)}")
-        print(f"    Transaction costs:  EUR {total_costs:,.0f}")
+        print(f"    Transaction costs:  USD ${total_costs:,.0f}")
         print(f"    Average turnover:   {avg_turnover:.2f} positions/day")
         print(f"  Backtest complete\n")
         
@@ -636,10 +606,10 @@ class ZScoreScreeningStrategy:
         ax1.plot(self.portfolio_value, linewidth=2, color='steelblue', label='Strategy')
         ax1.axhline(self.initial_capital, color='gray', linestyle='--', linewidth=1, alpha=0.5)
         ax1.set_title('Portfolio Equity Curve', fontsize=14, fontweight='bold')
-        ax1.set_ylabel('Portfolio Value (EUR)', fontsize=11)
+        ax1.set_ylabel('Portfolio Value (USD)', fontsize=11)
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
-        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'EUR {x/1000:.0f}K'))
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1000:.0f}K'))
         
         # 2. Drawdown
         cumulative = (1 + self.daily_returns).cumprod()
@@ -822,6 +792,7 @@ class ZScoreScreeningStrategy:
             print(f"Execution failed: {str(e)}")
             print(f"{'='*70}\n")
             raise
+
 
 def main():
     """Main execution function."""
