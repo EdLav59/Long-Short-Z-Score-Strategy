@@ -92,9 +92,11 @@ class ZScoreScreeningStrategy:
     def download_data(self, max_retries=3, retry_delay=2):
         """
         Download historical adjusted close prices with robust error handling.
+        Uses Ticker.history() method for better reliability.
         """
         print("[STEP 1/7] Downloading Historical Data...")
         print("-" * 70)
+        print("  This may take 5-10 minutes, please wait...")
         
         valid_data = {}
         failed_tickers = []
@@ -108,13 +110,9 @@ class ZScoreScreeningStrategy:
             
             for attempt in range(1, max_retries + 1):
                 try:
-                    df = yf.download(
-                        ticker,
-                        start=self.start_date,
-                        end=self.end_date,
-                        progress=False,
-                        show_errors=False
-                    )
+                    # Use Ticker.history() method instead of yf.download()
+                    stock = yf.Ticker(ticker)
+                    df = stock.history(start=self.start_date, end=self.end_date, auto_adjust=True)
                     
                     if df.empty:
                         print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - No data available")
@@ -124,7 +122,8 @@ class ZScoreScreeningStrategy:
                         print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - Insufficient data ({len(df)} points)")
                         break
                     
-                    valid_data[ticker] = df['Adj Close']
+                    # Use 'Close' instead of 'Adj Close' because auto_adjust=True
+                    valid_data[ticker] = df['Close']
                     print(f"  [{i:2d}/{len(self.tickers)}] {ticker:12} - OK ({len(df)} points)")
                     success = True
                     break
@@ -138,6 +137,11 @@ class ZScoreScreeningStrategy:
             
             if not success:
                 failed_tickers.append(ticker)
+            
+            # Pause every 10 tickers to avoid rate limiting
+            if i % 10 == 0:
+                print(f"  Progress: {i}/{len(self.tickers)} tickers processed")
+                time.sleep(1)
         
         # Validate minimum universe size
         min_universe = max(self.n_long + self.n_short + 5, 15)
@@ -461,8 +465,6 @@ class ZScoreScreeningStrategy:
         position_changes = lagged_positions.diff().abs().fillna(0)
         
         # Equal-weight allocation
-        # Long side: 50% capital / n_long positions
-        # Short side: 50% capital / n_short positions
         weights = pd.DataFrame(0.0, index=lagged_positions.index, columns=lagged_positions.columns)
         
         for date in weights.index:
@@ -823,76 +825,23 @@ class ZScoreScreeningStrategy:
 
 def main():
     """Main execution function."""
-            # Universe: European large-cap stocks (CAC 40 + DAX 30)
-        self.tickers = [
-            # CAC 40 - France (Paris Exchange)
-            'AI.PA',      # Air Liquide
-            'AIR.PA',     # Airbus
-            'ALO.PA',     # Alstom
-            'MT.AS',      # ArcelorMittal
-            'CS.PA',      # AXA
-            'BNP.PA',     # BNP Paribas
-            'EN.PA',      # Bouygues
-            'CAP.PA',     # Capgemini
-            'CA.PA',      # Carrefour
-            'ACA.PA',     # Credit Agricole
-            'BN.PA',      # Danone
-            'ENGI.PA',    # ENGIE
-            'EL.PA',      # EssilorLuxottica
-            'RMS.PA',     # Hermes
-            'KER.PA',     # Kering
-            'OR.PA',      # L'Oreal
-            'LR.PA',      # Legrand
-            'MC.PA',      # LVMH
-            'ML.PA',      # Michelin
-            'ORA.PA',     # Orange
-            'RI.PA',      # Pernod Ricard
-            'PUB.PA',     # Publicis
-            'RNO.PA',     # Renault
-            'SAF.PA',     # Safran
-            'SGO.PA',     # Saint-Gobain
-            'SAN.PA',     # Sanofi
-            'SU.PA',      # Schneider Electric
-            'GLE.PA',     # Societe Generale
-            'STLAP.PA',   # Stellantis
-            'STMPA.PA',   # STMicroelectronics
-            'TEP.PA',     # Teleperformance
-            'HO.PA',      # Thales
-            'TTE.PA',      # TotalEnergies
-            'URW.PA',     # Unibail-Rodamco-Westfield
-            'VIE.PA',     # Veolia
-            'DG.PA',      # Vinci
-            'VIV.PA',     # Vivendi
-            
-            # DAX 30 - Germany (Frankfurt Exchange)
-            'ADS.DE',     # Adidas
-            'ALV.DE',     # Allianz
-            'BAS.DE',     # BASF
-            'BAYN.DE',    # Bayer
-            'BMW.DE',     # BMW
-            'CON.DE',     # Continental
-            'DAI.DE',     # Daimler (Mercedes-Benz)
-            '1COV.VI',    # Covestro
-            'DB1.DE',     # Deutsche Boerse
-            'DBK.DE',     # Deutsche Bank
-            'DHL.DE',     # Deutsche Post
-            'DTE.DE',     # Deutsche Telekom
-            'EOAN.DE',    # E.ON
-            'FRE.DE',     # Fresenius
-            'HEI.DE',     # HeidelbergCement
-            'HEN3.DE',    # Henkel
-            'IFX.DE',     # Infineon
-            'LIN.DE',     # Linde
-            'MRK.DE',     # Merck KGaA
-            'MTX.DE',     # MTU Aero Engines
-            'MUV2.DE',    # Munich Re
-            'RWE.DE',     # RWE
-            'SAP.DE',     # SAP
-            'SIE.DE',     # Siemens
-            'VOW3.DE',    # Volkswagen
-            'VNA.DE',     # Vonovia
-        ]
-
+    
+    # European Large-Cap Universe (avec les bons tickers)
+    EUROPEAN_TICKERS = [
+        # CAC 40 - France
+        'AI.PA', 'AIR.PA', 'ALO.PA', 'MT.AS', 'CS.PA', 'BNP.PA',
+        'EN.PA', 'CAP.PA', 'CA.PA', 'ACA.PA', 'BN.PA', 'ENGI.PA',
+        'EL.PA', 'RMS.PA', 'KER.PA', 'OR.PA', 'LR.PA', 'MC.PA',
+        'ML.PA', 'ORA.PA', 'RI.PA', 'PUB.PA', 'RNO.PA', 'SAF.PA',
+        'SGO.PA', 'SAN.PA', 'SU.PA', 'GLE.PA', 'STLAP.PA', 'STMPA.PA',
+        'TEP.PA', 'HO.PA', 'TTE.PA', 'URW.PA', 'VIE.PA', 'DG.PA', 'VIV.PA',
+        
+        # DAX 30 - Germany
+        'ADS.DE', 'ALV.DE', 'BAS.DE', 'BAYN.DE', 'BMW.DE', 'CON.DE',
+        'MBG.DE', 'DB1.DE', 'DBK.DE', 'DHL.DE', 'DTE.DE',
+        'EOAN.DE', 'FRE.DE', 'HEI.DE', 'HEN3.DE', 'IFX.DE', 'LIN.DE',
+        'MRK.DE', 'MTX.DE', 'MUV2.DE', 'RWE.DE', 'SAP.DE', 'SIE.DE',
+        'VOW3.DE', 'VNA.DE'
     ]
     
     # Strategy Configuration
@@ -901,8 +850,8 @@ def main():
         'start_date': '2019-01-01',
         'end_date': '2024-01-01',
         'initial_capital': 100000,
-        'n_long': 10,    # Top 10 undervalued stocks
-        'n_short': 10    # Top 10 overvalued stocks
+        'n_long': 10,
+        'n_short': 10
     }
     
     # Execute Strategy
