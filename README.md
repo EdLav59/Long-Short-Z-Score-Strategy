@@ -113,37 +113,6 @@ VIX filtering fails across all thresholds and periods:
 3. **Misses recoveries:** Strict filters (VIX < 20, 25) keep strategy in cash during high-volatility rallies
 4. **No alpha generation:** Filters can't fix a fundamentally broken signal
 
-### Root Cause
-
-The 2019-2024 period exhibits strong momentum and factor concentration that invalidates mean reversion:
-
-- 2020-2021: Tech/growth momentum
-- 2022: Energy/defense outperformance during bear market
-- 2023-2024: AI concentration (NVDA, MSFT, META)
-
-Cross-sectional mean reversion assumes stocks move independently around sector means. Factor-driven markets violate this assumption.
-
-## Key Lessons
-
-### 1. Regime Dependency is Critical
-
-A strategy working in one regime (low-vol bull market) may catastrophically fail in another (momentum-driven or trending market). Single-period backtests are insufficient.
-
-### 2. Defensive Filters Do Not Create Alpha
-
-VIX filtering successfully identifies high-volatility periods but cannot overcome a broken signal. Risk management helps profitable strategies stay profitable; it cannot make unprofitable strategies profitable.
-
-### 3. Parameter Sensitivity Reveals Fragility
-
-Testing VIX thresholds 20, 25, 30 shows no threshold improves full-period performance. When no parameter setting works, the core logic is flawed.
-
-### 4. Negative Results Have Value
-
-This analysis demonstrates what does NOT work, eliminating false hypotheses:
-- Mean reversion alone is insufficient for 2019-2024 markets
-- Volatility filtering alone cannot fix regime mismatch
-- Historical parameter optimization creates overfitting risk
-
 ## Technical Implementation
 
 **Requirements:**
@@ -173,6 +142,12 @@ strategy = ZScoreMeanReversionStrategy(
 
 metrics = strategy.run('Stock_Data_History.xlsx', vix_filepath='VIXCLS.xlsx')
 ```
+
+**Run full sensitivity analysis:**
+```bash
+python longshort_zscore.py
+```
+
 ## Repository Structure
 ```
 Long-Short-Z-Score-Strategy/
@@ -215,8 +190,6 @@ This project demonstrates rigorous quantitative analysis:
 5. Actionable recommendations for improvement
 
 The strategy fails to generate positive risk-adjusted returns, and VIX filtering does not solve the underlying problem. However, the systematic analysis provides valuable insights into why mean reversion strategies struggle in momentum-driven markets and what characteristics a viable strategy would require.
-
-This negative result is more valuable than a cherry-picked positive backtest, as it demonstrates real understanding of market dynamics and strategy limitations.
 
 ## License
 
