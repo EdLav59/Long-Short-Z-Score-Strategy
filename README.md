@@ -156,7 +156,6 @@ Long-Short-Z-Score-Strategy/
 ├── VIXCLS.xlsx                   # VIX historical data
 ├── requirements.txt              # Python dependencies
 ├── README.md                     # This file
-├── results_2019-2021/            # Charts for bull market period
 ├── Results per period/           # Graphs for every tested period
 └── LICENSE                       # MIT License
 ```
